@@ -1,82 +1,40 @@
 #include <WiFi.h>
-#include <ESPAsyncWebServer.h>
+#include <WebServer.h>
 
-const char* ssid = "Cutiekatz";
-const char* password = "DaisyMilky@143";
+const char* ssid = "Cutiekatz";        // Change to your WiFi SSID
+const char* password = "DaisyMilky@143"; // Change to your WiFi password
 
-const int relayPin = 5;  
-bool relayState = false;
-bool countdownRunning = false;  
-unsigned long relayEndTime = 0;
+WebServer server(80);
+const int RELAY_PIN = 5;
 
-AsyncWebServer server(80);
+unsigned long relayEndTime = 0;  // Store when the relay should turn off
 
-// HTML + CSS + JavaScript
+// HTML + JavaScript UI
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ESP32 Relay Timer</title>
+    <title>Relay Timer Control</title>
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            text-align: center;
-            background-color: black;
-            color: white;
-            margin: 0;
-            padding: 20px;
-        }
-        h2 {
-            font-size: 24px;
-            margin-bottom: 20px;
-        }
-        .picker {
-            font-size: 40px;
-            margin-bottom: 20px;
-        }
-        .picker input {
-            font-size: 30px;
-            width: 80px;
-            text-align: center;
-            margin: 5px;
-        }
-        .timer {
-            font-size: 60px;
-            font-weight: bold;
-            margin: 20px 0;
-        }
-        button {
-            font-size: 22px;
-            padding: 12px 20px;
-            margin: 10px;
-            border: none;
-            cursor: pointer;
-            width: 150px;
-        }
-        .start-btn { background-color: green; color: white; }
-        .stop-btn { background-color: red; color: white; }
-        button:hover { opacity: 0.8; }
+        body { font-family: Arial, sans-serif; text-align: center; background-color: black; color: white; }
+        .timer { font-size: 60px; margin-top: 20px; }
+        .picker { font-size: 40px; }
+        button { font-size: 20px; padding: 10px; margin-top: 20px; }
     </style>
     <script>
         let countdownInterval;
 
         function startTimer() {
-            let hours = parseInt(document.getElementById('hours').value) || 0;
-            let minutes = parseInt(document.getElementById('minutes').value) || 0;
-            let seconds = parseInt(document.getElementById('seconds').value) || 0;
-            let totalSeconds = (hours * 3600) + (minutes * 60) + seconds;
-
-            if (totalSeconds <= 0) {
-                alert("Please enter a valid time.");
-                return;
-            }
+            let hours = document.getElementById('hours').value;
+            let minutes = document.getElementById('minutes').value;
+            let seconds = document.getElementById('seconds').value;
+            let totalSeconds = (hours * 3600) + (minutes * 60) + parseInt(seconds);
 
             let xhr = new XMLHttpRequest();
             xhr.open("GET", "/setTimer?time=" + totalSeconds, true);
             xhr.send();
 
+            alert("Relay set for " + hours + "h " + minutes + "m " + seconds + "s");
             startCountdown(totalSeconds);
         }
 
@@ -128,7 +86,8 @@ const char index_html[] PROGMEM = R"rawliteral(
             xhr.send();
         }
 
-        setInterval(updateRelayStatus, 2000);
+        // Fetch relay status when the page loads
+        window.onload = updateRelayStatus;
     </script>
 </head>
 <body>
@@ -138,73 +97,75 @@ const char index_html[] PROGMEM = R"rawliteral(
         <input type="number" id="minutes" min="0" max="59" value="1"> m
         <input type="number" id="seconds" min="0" max="59" value="0"> s
     </div>
-    <button class="start-btn" onclick="startTimer()">Start Timer</button>
-    <button class="stop-btn" onclick="stopTimer()">Stop Timer</button>
+    <button onclick="startTimer()">Set Timer</button>
+    <button onclick="stopTimer()">Stop Timer</button>
     <div class="timer" id="countdown">00h 01m 00s</div>
 </body>
 </html>
 )rawliteral";
 
+// Start Timer Handler
+void handleSetTimer() {
+    if (server.hasArg("time")) {
+        int duration = server.arg("time").toInt();
+        relayEndTime = millis() + (duration * 1000);  // Set relay end time
+        digitalWrite(RELAY_PIN, HIGH); // Turn on relay
+        server.send(200, "text/plain", "Timer Set");
+    }
+}
+
+// Stop Timer Handler
+void handleStopTimer() {
+    relayEndTime = 0;
+    digitalWrite(RELAY_PIN, LOW);  // Turn off relay
+    server.send(200, "text/plain", "Timer Stopped");
+}
+
+// Send Relay Status
+void handleRelayStatus() {
+    unsigned long now = millis();
+    int remaining = (relayEndTime > now) ? (relayEndTime - now) / 1000 : 0;
+
+    if (remaining == 0) {
+        digitalWrite(RELAY_PIN, LOW);  // Ensure relay is off
+    }
+
+    String response = "{\"state\":\"" + String((remaining > 0) ? "ON" : "OFF") +
+                      "\", \"remaining\":" + String(remaining) + "}";
+    server.send(200, "application/json", response);
+}
+
 void setup() {
     Serial.begin(115200);
-    pinMode(relayPin, OUTPUT);
-    digitalWrite(relayPin, LOW);
+    pinMode(RELAY_PIN, OUTPUT);
+    digitalWrite(RELAY_PIN, LOW);
 
     WiFi.begin(ssid, password);
-    Serial.println("Connecting to WiFi...");
-
-    int attempt = 0;
-    while (WiFi.status() != WL_CONNECTED && attempt < 20) {
-        delay(1000);
+    Serial.print("Connecting to WiFi...");
+    while (WiFi.status() != WL_CONNECTED) {
+        delay(500);
         Serial.print(".");
-        attempt++;
     }
+    
+    Serial.println("\nWiFi Connected!");
+    Serial.print("ESP32 Web Server IP: ");
+    Serial.println(WiFi.localIP());
 
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.println("\nWiFi Connected!");
-        Serial.print("IP Address: ");
-        Serial.println(WiFi.localIP());
-    } else {
-        Serial.println("\nFailed to connect to WiFi!");
-    }
-
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
-        request->send_P(200, "text/html", index_html);
-    });
-
-    server.on("/setTimer", HTTP_GET, [](AsyncWebServerRequest *request){
-        if (request->hasParam("time")) {
-            int duration = request->getParam("time")->value().toInt();
-            relayState = true;
-            countdownRunning = true;
-            relayEndTime = millis() + (duration * 60000);
-            digitalWrite(relayPin, HIGH);
-        }
-        request->send(200, "text/plain", "Timer Set");
-    });
-
-    server.on("/stopTimer", HTTP_GET, [](AsyncWebServerRequest *request){
-        digitalWrite(relayPin, LOW);
-        relayState = false;
-        countdownRunning = false;
-        relayEndTime = 0;
-        request->send(200, "text/plain", "Timer Stopped");
-    });
-
-    server.on("/getTimeRemaining", HTTP_GET, [](AsyncWebServerRequest *request){
-        int remaining = (countdownRunning && relayEndTime > millis()) ? (relayEndTime - millis()) / 1000 : 0;
-        request->send(200, "text/plain", String(remaining));
-    });
+    server.on("/", []() { server.send_P(200, "text/html", index_html); });
+    server.on("/setTimer", handleSetTimer);
+    server.on("/stopTimer", handleStopTimer);
+    server.on("/relayStatus", handleRelayStatus);
 
     server.begin();
-    Serial.println("Web Server Started!");
 }
 
 void loop() {
-    if (countdownRunning && millis() >= relayEndTime) {
-        digitalWrite(relayPin, LOW);
-        relayState = false;
-        countdownRunning = false;
-        Serial.println("Relay OFF");
+    server.handleClient();
+
+    // Check if the timer has expired and turn off relay
+    if (relayEndTime > 0 && millis() >= relayEndTime) {
+        relayEndTime = 0;
+        digitalWrite(RELAY_PIN, LOW);
+        Serial.println("Relay turned OFF (Timer ended)");
     }
 }
